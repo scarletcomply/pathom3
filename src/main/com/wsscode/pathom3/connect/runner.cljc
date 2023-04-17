@@ -899,6 +899,7 @@
 (defn processor-error? [err]
   (some-> (ex-data err) ::processor-error?))
 
+#_
 (defn processor-exception [env err]
   (let [env' (assoc env
                ::pcp/graph (assoc-end-plan-stats env)
@@ -922,6 +923,33 @@
         #?(:clj     (proxy [ExceptionInfo] [msg data err]
                       (toString [] msg))
            :default (ex-info msg data err))))))
+
+(defn processor-exception
+  "Patch for `com.wsscode.pathom3.connect.runner/processor-exception`.
+
+   Does not include the environment in `ex-data`.  Having huge exception data will
+   crash tooling, and can lead to `OutOfMemoryError`s, especially if data in the
+   environment contains cyclic references.
+
+   We observed `OutOfMemoryError`s in the following scenario:
+   - A resolver fails for any reason
+   - Pathom captures the environment and context information in an `ExceptionInfo`
+     instance and throws it.
+   - In the parallel runner, this is wrapped by `CompletableFuture` in
+     `CompletionException`.
+   - The `Throwable(Throwable cause)` constructor calls `toString()` on the `cause`,
+     which is our `ExceptionInfo`.
+   - `ExceptionInfo.toString()` prints its data map.
+   - The system runs out of memory trying to print the huge and potentially
+     cyclic map.
+   - In the `ForkJoinPool`, this exception thrown in `toString()` causes the tracking
+     promise to stay in pending state forever."
+  [_env err]
+  (if (processor-error? err)
+    err
+    (let [msg  (str "Graph execution failed: " (ex-message err))
+          data (assoc (ex-data err) ::processor-error? true)]
+      (ex-info msg data err))))
 
 (defn plan-and-run!
   [env ast-or-graph entity-tree*]
